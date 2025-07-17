@@ -11,6 +11,7 @@ import plotly.express as px
 import hashlib
 import base64
 from io import BytesIO
+# --- 程式碼變更處：移除所有 CellNotFound 的 import ---
 
 # --- 1. 設定區 ---
 st.set_page_config(page_title="AI 發票記帳助理", page_icon="🔐", layout="wide")
@@ -112,7 +113,6 @@ def check_login(username, password):
     users = users_ws.get_all_records()
     hashed_password_to_check = hash_password(password)
     for user in users:
-        # --- 程式碼變更處：使用 .lower() 進行不分大小寫的比對 ---
         if str(user.get('username')).lower() == username.lower() and user.get('hashed_password') == hashed_password_to_check:
             return True, user.get('username') # 回傳資料庫中正確大小寫的名稱
     return False, None
@@ -127,7 +127,6 @@ def add_user(username, password, avatar_file):
     users_ws = get_users_worksheet(sheet)
     users = users_ws.get_all_records()
     
-    # --- 程式碼變更處：強化使用者名稱檢查 ---
     if username.lower() == ADMIN_USERNAME.lower():
         return False, "這個使用者名稱為管理員保留，請選擇其他名稱。"
     if any(str(user.get('username')).lower() == username.lower() for user in users):
@@ -159,7 +158,8 @@ def update_user(username, new_password=None, new_avatar_file=None):
     
     try:
         cell = users_ws.find(username)
-    except gspread.CellNotFound:
+    # --- 程式碼變更處：使用 gspread.exceptions.CellNotFound ---
+    except gspread.exceptions.CellNotFound:
         return False, "找不到該使用者"
 
     row_index = cell.row
@@ -188,30 +188,32 @@ def delete_user(username_to_delete):
     if not sheet:
         return False, "資料庫連線失敗"
 
-    # 刪除使用者帳號
     users_ws = get_users_worksheet(sheet)
     try:
         cell = users_ws.find(username_to_delete)
         users_ws.delete_rows(cell.row)
-    except gspread.CellNotFound:
+    # --- 程式碼變更處：使用 gspread.exceptions.CellNotFound ---
+    except gspread.exceptions.CellNotFound:
         return False, "在使用者列表中找不到該使用者"
     except Exception as e:
         return False, f"刪除使用者時發生錯誤: {e}"
 
-    # 刪除該使用者的所有消費紀錄
     try:
         data_ws = sheet.worksheet("工作表1")
         all_data = data_ws.get_all_records()
         if all_data:
             df = pd.DataFrame(all_data)
-            # 保留不屬於該使用者的資料
             df_remaining = df[df['使用者'] != username_to_delete]
-            # 清空工作表並寫回剩餘資料
             data_ws.clear()
             if not df_remaining.empty:
                 data_ws.update([df_remaining.columns.values.tolist()] + df_remaining.values.tolist(), 'A1')
-            else: # 如果刪除後沒有任何資料了，就只寫入表頭
-                data_ws.update([df.columns.values.tolist()], 'A1')
+            else:
+                try:
+                    header = df.columns.values.tolist()
+                    data_ws.update([header], 'A1')
+                except Exception:
+                    pass
+
 
     except gspread.WorksheetNotFound:
         pass
@@ -236,9 +238,10 @@ def page_invoice_processing(username):
     if 'parsed_df' not in st.session_state: st.session_state.parsed_df = None
     if 'uploaded_file_content' not in st.session_state: st.session_state.uploaded_file_content = None
     if 'uploaded_file_name' not in st.session_state: st.session_state.uploaded_file_name = None
+    if 'uploader_key' not in st.session_state: st.session_state.uploader_key = 0
     tab1, tab2 = st.tabs(["📷 拍照上傳", "📂 檔案上傳"])
-    with tab1: camera_input = st.camera_input("點擊按鈕開啟相機拍攝發票")
-    with tab2: file_uploader_input = st.file_uploader("從手機或電腦選擇圖片檔案", type=["png", "jpg", "jpeg"])
+    with tab1: camera_input = st.camera_input("點擊按鈕開啟相機拍攝發票", key=f"camera_{st.session_state.uploader_key}")
+    with tab2: file_uploader_input = st.file_uploader("從手機或電腦選擇圖片檔案", type=["png", "jpg", "jpeg"], key=f"uploader_{st.session_state.uploader_key}")
     uploaded_file = camera_input or file_uploader_input
     if uploaded_file is not None:
         col1, col2 = st.columns([2, 3])
@@ -294,12 +297,14 @@ def page_invoice_processing(username):
                                             worksheet_daily.append_rows(final_df_to_save.values.tolist(), value_input_option='USER_ENTERED')
                                         st.success("資料已成功寫入您的記帳本！")
                                         st.balloons()
+                                        st.session_state.uploader_key += 1
                                         st.session_state.parsed_df = None; st.session_state.uploaded_file_name = None; st.session_state.uploaded_file_content = None
                                         st.rerun()
                                 else: st.warning("校正後的資料無效或不完整，無法儲存。")
                             except Exception as e: st.error(f"儲存過程中發生錯誤：{e}")
                     else: st.warning("表格中沒有資料，無法儲存。")
-    else: st.info("↑ 請從上方選擇拍照或上傳您的發票圖片以開始使用。")
+    else:
+        st.info("↑ 請從上方選擇拍照或上傳您的發票圖片以開始使用。")
 
 def page_dashboard(username):
     st.title(f"📊 {username} 的消費儀表板")
@@ -385,7 +390,7 @@ def page_dashboard(username):
 
 def page_edit_account(username):
     """編輯帳戶頁面"""
-    st.title(f"✏️ 編輯 {username} 的帳戶")
+    st.title(f"✏️ 編輯帳戶")
 
     st.subheader("更換頭像")
     new_avatar_file = st.file_uploader("上傳新的頭像照片 (選填)", type=['png', 'jpg', 'jpeg'], key="avatar_uploader")
@@ -416,11 +421,10 @@ def page_edit_account(username):
     st.write("---")
     st.subheader("危險區域")
     
-    # --- 程式碼變更處：使用 .lower() 進行不分大小寫的比對 ---
     if username.lower() == ADMIN_USERNAME.lower():
         st.warning("管理員模式：您可以刪除任何使用者帳號。此操作無法復原！")
         all_users = get_all_users()
-        deletable_users = [user['username'] for user in all_users if user['username'].lower() != ADMIN_USERNAME.lower()]
+        deletable_users = [user['username'] for user in all_users if str(user.get('username')).lower() != ADMIN_USERNAME.lower()]
         if deletable_users:
             user_to_delete = st.selectbox("選擇要刪除的使用者：", deletable_users)
             if st.button(f"刪除使用者「{user_to_delete}」", type="primary"):
@@ -428,7 +432,7 @@ def page_edit_account(username):
                 if success:
                     st.success(message)
                     st.cache_data.clear()
-                    st.rerun() # 新增：刷新頁面
+                    st.rerun()
                 else:
                     st.error(message)
         else:
@@ -516,11 +520,10 @@ if not st.session_state.logged_in:
             submitted = st.form_submit_button("登入", use_container_width=True, type="primary")
 
             if submitted:
-                # --- 程式碼變更處：使用新的 check_login 回傳值 ---
                 login_success, correct_username = check_login(st.session_state.selected_user, password)
                 if login_success:
                     st.session_state.logged_in = True
-                    st.session_state.username = correct_username # 儲存正確大小寫的名稱
+                    st.session_state.username = correct_username
                     st.session_state.selected_user = None
                     st.rerun()
                 else:
