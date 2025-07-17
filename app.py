@@ -11,7 +11,8 @@ import plotly.express as px
 import hashlib
 import base64
 from io import BytesIO
-# --- 程式碼變更處：已移除所有 'CellNotFound' 的 import 語句 ---
+from google.cloud import vision
+from google.oauth2 import service_account # --- 程式碼變更處：引入 service_account ---
 
 # --- 1. 設定區 ---
 st.set_page_config(page_title="AI 發票記帳助理", page_icon="🔐", layout="wide")
@@ -32,6 +33,18 @@ def get_google_sheet(sheet_name):
         st.error(f"Google Sheet 連線失敗，請檢查 Streamlit Secrets 設定。錯誤訊息: {e}")
         return None
 
+@st.cache_resource
+def get_vision_client():
+    """建立 Vision AI 客戶端"""
+    try:
+        # --- 程式碼變更處：明確地從 secrets 讀取並傳遞憑證 ---
+        creds_json = st.secrets["GOOGLE_CREDENTIALS"]
+        credentials = service_account.Credentials.from_service_account_info(creds_json)
+        return vision.ImageAnnotatorClient(credentials=credentials)
+    except Exception as e:
+        st.error(f"Google Vision API 連線失敗: {e}")
+        return None
+
 def configure_gemini():
     """設定 Gemini API 金鑰"""
     try:
@@ -44,14 +57,23 @@ def configure_gemini():
         st.error(f"Gemini API 金鑰設定失敗。錯誤訊息: {e}")
         return False
 
-def parse_with_gemini(image_input):
-    """使用 Gemini AI 直接解析圖片，同時提取日期和品項。"""
+def analyze_invoice_with_vision(vision_client, image_content):
+    """(速度優化) 使用 Vision API 進行快速文字辨識 (OCR)"""
+    image = vision.Image(content=image_content)
+    response = vision_client.document_text_detection(image=image)
+    if response.error.message:
+        raise Exception(f'Vision API 發生錯誤: {response.error.message}')
+    return response.full_text_annotation.text
+
+def parse_with_gemini(raw_text):
+    """(專注思考) 使用 Gemini AI 解析純文字，不再處理圖片"""
     if not configure_gemini():
         return None
     model = genai.GenerativeModel('gemini-1.5-flash')
+    
     prompt_parts = [
         "你是一位頂尖的發票分析師。",
-        "請直接分析這張圖片，將其內容解析成一個單一的 JSON 物件。",
+        "請分析以下的發票文字，並將其內容解析成一個單一的 JSON 物件。",
         "這個 JSON 物件必須包含兩個鍵: 'invoice_date' 和 'items'。",
         "1. 'invoice_date': 發票上的日期，格式必須是 'YYYY-MM-DD'。如果看到民國年，請轉換成西元年。如果找不到日期，則回傳 null。",
         "2. 'items': 一個 JSON 陣列，包含所有消費品項。",
@@ -61,11 +83,16 @@ def parse_with_gemini(image_input):
         "   - 如果品項名稱有多行，請將它們合併成一個字串。",
         "   - 如果遇到金額為 0 的品項，請直接忽略。",
         "請只回傳這個單一的 JSON 物件，不要有其他任何文字說明。",
-        "範例格式: {\"invoice_date\": \"2023-03-18\", \"items\": [{\"品項\": \"範例品項\", \"數量\": 1, \"類別\": \"範例類別\", \"金額\": 100}]}"
+        "範例格式: {\"invoice_date\": \"2023-03-18\", \"items\": [{\"品項\": \"範例品項\", \"數量\": 1, \"類別\": \"範例類別\", \"金額\": 100}]}",
+        "---",
+        "這是要分析的發票文字:",
+        "```text",
+        raw_text,
+        "```"
     ]
     prompt = "\n".join(prompt_parts)
     try:
-        response = model.generate_content([prompt, image_input])
+        response = model.generate_content(prompt)
         cleaned_response = re.sub(r'```json\n?|```', '', response.text.strip())
         return json.loads(cleaned_response)
     except Exception as e:
@@ -254,8 +281,13 @@ def page_invoice_processing(username):
             if st.button("1. 開始辨識", type="primary", use_container_width=True):
                 if st.session_state.uploaded_file_content:
                     with st.spinner("AI 正在解析您的發票..."):
-                        image_input = Image.open(uploaded_file)
-                        parsed_data = parse_with_gemini(image_input)
+                        vision_client = get_vision_client()
+                        if vision_client:
+                            raw_text = analyze_invoice_with_vision(vision_client, st.session_state.uploaded_file_content)
+                            parsed_data = parse_with_gemini(raw_text)
+                        else:
+                            parsed_data = None
+
                         if not parsed_data or not isinstance(parsed_data, dict) or "items" not in parsed_data or not parsed_data.get("items"):
                             st.warning("AI 無法自動解析出任何品項。請手動新增資料。")
                             invoice_date = datetime.now().strftime('%Y-%m-%d')
