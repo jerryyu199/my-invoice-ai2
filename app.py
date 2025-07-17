@@ -11,7 +11,7 @@ import plotly.express as px
 import hashlib
 import base64
 from io import BytesIO
-# --- 程式碼變更處：移除所有 CellNotFound 的 import ---
+# --- 程式碼變更處：已移除所有 'CellNotFound' 的 import 語句 ---
 
 # --- 1. 設定區 ---
 st.set_page_config(page_title="AI 發票記帳助理", page_icon="🔐", layout="wide")
@@ -114,7 +114,7 @@ def check_login(username, password):
     hashed_password_to_check = hash_password(password)
     for user in users:
         if str(user.get('username')).lower() == username.lower() and user.get('hashed_password') == hashed_password_to_check:
-            return True, user.get('username') # 回傳資料庫中正確大小寫的名稱
+            return True, user.get('username')
     return False, None
 
 def add_user(username, password, avatar_file):
@@ -158,7 +158,6 @@ def update_user(username, new_password=None, new_avatar_file=None):
     
     try:
         cell = users_ws.find(username)
-    # --- 程式碼變更處：使用 gspread.exceptions.CellNotFound ---
     except gspread.exceptions.CellNotFound:
         return False, "找不到該使用者"
 
@@ -192,7 +191,6 @@ def delete_user(username_to_delete):
     try:
         cell = users_ws.find(username_to_delete)
         users_ws.delete_rows(cell.row)
-    # --- 程式碼變更處：使用 gspread.exceptions.CellNotFound ---
     except gspread.exceptions.CellNotFound:
         return False, "在使用者列表中找不到該使用者"
     except Exception as e:
