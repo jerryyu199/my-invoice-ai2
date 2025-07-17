@@ -4,3 +4,5 @@ pandas
 plotly
 google-generativeai
 Pillow
+google-cloud-vision
+google-auth-oauthlib
